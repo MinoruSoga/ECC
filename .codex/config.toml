@@ -15,9 +15,9 @@
 # https://developers.openai.com/codex/multi-agent
 
 # Leave top-level model and model_provider unset to inherit other/default choices.
-# Existing ECC instruction key retained for sync compatibility, without claiming
-# support in every Codex version. Consult the supported version's reference.
-persistent_instructions = "Follow project AGENTS.md guidelines. Use available MCP servers when they can help."
+# Use the current Codex instruction key; the former persistent_instructions
+# alias is ignored by the installed native CLI.
+developer_instructions = "Follow project AGENTS.md guidelines. Use available MCP servers when they can help."
 
 [features]
 multi_agent = true

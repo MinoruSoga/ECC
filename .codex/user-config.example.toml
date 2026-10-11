@@ -27,9 +27,9 @@ notify = [
   "-sound", "default",
 ]
 
-# Existing ECC instruction key retained for sync compatibility.
-# Check the configuration reference for your supported Codex version.
-persistent_instructions = "Follow project AGENTS.md guidelines. Use available MCP servers when they can help."
+# Supported Codex instruction key; add-only sync preserves existing user values.
+# Unknown legacy instruction keys are preserved without activating their contents.
+developer_instructions = "Follow project AGENTS.md guidelines. Use available MCP servers when they can help."
 
 # Optional instruction-file override; consult the supported version's semantics.
 # model_instructions_file = "/absolute/path/to/instructions.md"

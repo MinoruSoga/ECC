@@ -9,6 +9,7 @@
  * - Missing root keys are inserted before the first TOML table.
  * - Missing table keys are appended to existing tables.
  * - Missing tables are appended to the end of the file.
+ * - Unknown legacy keys are retained, never renamed into active instruction keys.
  */
 
 const fs = require('fs');
@@ -23,7 +24,7 @@ try {
   process.exit(1);
 }
 
-const ROOT_KEYS = ['approval_policy', 'sandbox_mode', 'web_search', 'notify', 'persistent_instructions'];
+const ROOT_KEYS = ['approval_policy', 'sandbox_mode', 'web_search', 'notify', 'developer_instructions'];
 const TABLE_PATHS = [
   'features',
   'profiles.strict',

@@ -153,12 +153,50 @@ function withMergeFixture(fn) {
   }
 }
 
+function withGlobalCheckFixture(instructions, fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-codex-global-check-'));
+  try {
+    const codexHome = path.join(root, 'codex');
+    const agentsHome = path.join(root, 'agents');
+    const hooksDir = path.join(root, 'git-hooks');
+    const binDir = path.join(root, 'bin');
+    const promptsDir = path.join(codexHome, 'prompts');
+    for (const dir of [promptsDir, hooksDir, binDir]) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), `${instructions}\n[features]\nmulti_agent = true\n[profiles.strict]\n[profiles.yolo]\n[mcp_servers.chrome-devtools]\n`);
+    fs.writeFileSync(path.join(codexHome, 'AGENTS.md'), '# ECC\n# Codex Supplement (From ECC .codex/AGENTS.md)\n');
+    for (const name of ['ecc-prompts-manifest.txt', 'ecc-extension-prompts-manifest.txt']) {
+      fs.writeFileSync(path.join(promptsDir, name), 'fixture\n');
+    }
+    for (let index = 0; index < 43; index++) fs.writeFileSync(path.join(promptsDir, `ecc-fixture-${index}.md`), 'fixture\n');
+    const requiredSkills = ['api-design', 'article-writing', 'backend-patterns', 'coding-standards',
+      'content-engine', 'e2e-testing', 'eval-harness', 'frontend-patterns', 'frontend-slides',
+      'investor-materials', 'investor-outreach', 'market-research', 'security-review',
+      'strategic-compact', 'tdd-workflow', 'verification-loop'];
+    for (const name of requiredSkills) fs.mkdirSync(path.join(agentsHome, 'skills', name), { recursive: true });
+    for (const [dir, names] of [[hooksDir, ['pre-commit', 'pre-push']],
+      [binDir, ['ecc-sync-codex', 'ecc-install-git-hooks', 'ecc-check-codex']]]) {
+      for (const name of names) fs.writeFileSync(path.join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    }
+    const gitConfig = path.join(root, 'gitconfig');
+    fs.writeFileSync(gitConfig, `[core]\n\thooksPath = ${hooksDir}\n`);
+    const result = spawnSync('bash', [path.join(repoRoot, 'scripts', 'codex', 'check-codex-global-state.sh')], {
+      encoding: 'utf8', timeout: 5000, shell: false,
+      env: { ...process.env, CODEX_HOME: codexHome, AGENTS_HOME: agentsHome,
+        ECC_GLOBAL_HOOKS_DIR: hooksDir, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1',
+        PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+    });
+    fn(result);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 const checks = [
   ['project config has only the intended guidance, feature and role keys', () => {
     const project = TOML.parse(config);
-    assert.deepStrictEqual(Object.keys(project).sort(), ['agents', 'features', 'persistent_instructions']);
+    assert.deepStrictEqual(Object.keys(project).sort(), ['agents', 'developer_instructions', 'features']);
     assert.deepStrictEqual(project.features, { multi_agent: true });
-    assert.strictEqual(project.persistent_instructions,
+    assert.strictEqual(project.developer_instructions,
       'Follow project AGENTS.md guidelines. Use available MCP servers when they can help.');
     assert.deepStrictEqual(Object.keys(project.agents).sort(),
       ['docs_researcher', 'explorer', 'max_depth', 'max_threads', 'reviewer']);
@@ -168,8 +206,8 @@ const checks = [
   ['user reference preserves root defaults and explicit profiles in their own tables', () => {
     const user = readUserReference();
     assert.deepStrictEqual(Object.keys(user).sort(), [
-      'agents', 'approval_policy', 'features', 'mcp_servers', 'notify',
-      'persistent_instructions', 'profiles', 'sandbox_mode', 'web_search',
+      'agents', 'approval_policy', 'developer_instructions', 'features', 'mcp_servers',
+      'notify', 'profiles', 'sandbox_mode', 'web_search',
     ]);
     assert.strictEqual(user.approval_policy, 'on-request');
     assert.strictEqual(user.sandbox_mode, 'workspace-write');
@@ -185,7 +223,9 @@ const checks = [
   ['user reference preserves guidance, role mappings and existing MCP data', () => {
     const user = readUserReference();
     const project = TOML.parse(config);
-    for (const key of ['persistent_instructions', 'features', 'agents']) {
+    assert.strictEqual(user.developer_instructions, project.developer_instructions);
+    assert.ok(!Object.hasOwn(user, 'persistent_instructions'), 'Reference must not generate an ignored legacy key');
+    for (const key of ['features', 'agents']) {
       assert.deepStrictEqual(user[key], project[key]);
     }
     const args = {
@@ -208,16 +248,19 @@ const checks = [
       const expected = readUserReference();
       delete expected.mcp_servers;
       assert.deepStrictEqual(TOML.parse(raw), expected);
+      assert.strictEqual(TOML.parse(raw).developer_instructions, expected.developer_instructions);
+      assert.ok(!Object.hasOwn(TOML.parse(raw), 'persistent_instructions'));
       assert.strictEqual(run().status, 0);
       assert.strictEqual(fs.readFileSync(target, 'utf8'), raw);
     });
   }],
-  ['legacy merger preserves customized values, unknown tables and dry-run bytes', () => {
+  ['legacy merger preserves custom developer instructions, unknown legacy keys and dry-run bytes', () => {
     withMergeFixture(({ target, run }) => {
       const custom = {
         model: 'user-selected-model', model_provider: 'user-selected-provider',
         approval_policy: 'never', sandbox_mode: 'read-only', web_search: 'disabled',
-        notify: ['custom-notifier'], persistent_instructions: 'My instructions', extra: 'keep',
+        notify: ['custom-notifier'], developer_instructions: 'My active instructions',
+        persistent_instructions: 'Unknown legacy text: preserve without activating', extra: 'keep',
         features: { multi_agent: false }, profiles: { strict: { sandbox_mode: 'workspace-write' } },
         mcp_servers: { personal: { command: 'private-command' } },
       };
@@ -229,12 +272,46 @@ const checks = [
       assert.strictEqual(result.status, 0, result.stderr);
       const merged = TOML.parse(fs.readFileSync(target, 'utf8'));
       for (const key of ['model', 'model_provider', 'approval_policy', 'sandbox_mode', 'web_search', 'notify',
-        'persistent_instructions', 'extra', 'features', 'mcp_servers']) {
+        'developer_instructions', 'persistent_instructions', 'extra', 'features', 'mcp_servers']) {
         assert.deepStrictEqual(merged[key], custom[key]);
       }
       assert.strictEqual(merged.profiles.strict.sandbox_mode, 'workspace-write');
       assert.strictEqual(merged.profiles.strict.approval_policy, 'on-request');
       assert.deepStrictEqual(merged.profiles.yolo, readUserReference().profiles.yolo);
+      const first = fs.readFileSync(target, 'utf8');
+      assert.strictEqual(run().status, 0);
+      assert.strictEqual(fs.readFileSync(target, 'utf8'), first);
+    });
+  }],
+  ['legacy target instruction text is retained without copying it into the supported key', () => {
+    withMergeFixture(({ target, run }) => {
+      const legacy = 'Legacy user text must remain unknown data';
+      fs.writeFileSync(target, TOML.stringify({ persistent_instructions: legacy }));
+      const result = run();
+      assert.strictEqual(result.status, 0, result.stderr);
+      const raw = fs.readFileSync(target, 'utf8');
+      const merged = TOML.parse(raw);
+      assert.strictEqual(merged.persistent_instructions, legacy);
+      assert.strictEqual(typeof merged.developer_instructions, 'string');
+      assert.strictEqual(merged.developer_instructions, readUserReference().developer_instructions);
+      assert.notStrictEqual(merged.developer_instructions, legacy);
+      assert.strictEqual(run().status, 0);
+      assert.strictEqual(fs.readFileSync(target, 'utf8'), raw);
+    });
+  }],
+  ['global checker accepts supported developer instructions without a legacy-key warning', () => {
+    withGlobalCheckFixture('developer_instructions = "Current supported guidance"', result => {
+      assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /\[OK\] developer_instructions is configured/);
+      assert.doesNotMatch(result.stdout, /\[WARN\].*(?:developer_instructions|persistent_instructions)/);
+      assert.doesNotMatch(result.stdout, /persistent_instructions/);
+    });
+  }],
+  ['global checker keeps supported instructions optional without activating a legacy key', () => {
+    withGlobalCheckFixture('persistent_instructions = "Unknown legacy data"', result => {
+      assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /\[WARN\] developer_instructions is not set \(recommended but optional\)/);
+      assert.doesNotMatch(result.stdout, /\[OK\].*persistent_instructions/);
     });
   }],
   ['legacy merger rejects missing user reference without falling back to project config', () => {
